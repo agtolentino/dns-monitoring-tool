@@ -3,10 +3,6 @@ import ipaddress
 import time
 import requests
 
-# ip = socket.gethostbyname("site.recruitment.shq.nz")
-# addr = ipaddress.ip_address(ip)
-# print(addr.is_private)
-
 
 def dns_check(domain):
     try:
