@@ -1,0 +1,7 @@
+# one domain per line; lines starting with # are ignored
+google.com
+github.com
+example.com
+# demos of failure cases:
+expired.badssl.com
+kagwagle.com
