@@ -1,9 +1,12 @@
-import socket
 import ipaddress
+import socket
+import ssl
 import time
+
 import requests
 
 
+# ---------------------------------------------------------------- DNS
 def dns_check(domain):
     try:
         address = socket.gethostbyname(domain)
@@ -11,63 +14,69 @@ def dns_check(domain):
     except socket.gaierror as ge:
         return {"success": False, "result": None, "error": str(ge)}
 
+
 def is_private(address):
     try:
-        # print(address)
-        address = ipaddress.ip_address(address)
-        address_type = address.is_private
-        return {"is_private":address_type, "error": None}
+        ip_obj = ipaddress.ip_address(address)
+        return {"is_private": ip_obj.is_private, "error": None}
     except ValueError as er:
         return {"is_private": None, "error": str(er)}
 
 
+# ---------------------------------------------------------------- HTTP
 def http_check(domain):
+    call_start = time.time()  # set before the try so every except block can use it
     try:
         if not domain.startswith("http://") and not domain.startswith("https://"):
             domain = "https://" + domain
-        call_start = time.time()
+
         http_response = requests.get(domain, timeout=5)
+        http_response.raise_for_status()  # makes 4xx/5xx raise HTTPError
         elapsed = time.time() - call_start
-        return {"success": True, "result": http_response,"time elapsed" : elapsed, "error": None}
-    
-    except requests.exceptions.ConnectionError as error:
-        elapsed = time.time() - call_start
-        return {"success": False, "result": error.response,"time elapsed" : elapsed, "error": None}
-    
+        return {"success": True, "result": http_response.status_code,
+                "time elapsed": elapsed, "error": None}
+
     except requests.exceptions.HTTPError as error:
-            elapsed = time.time() - call_start
-            return {"success": False, "result": error.response,"time elapsed" : elapsed, "error": None}
+        elapsed = time.time() - call_start
+        return {"success": False, "result": error.response.status_code,
+                "time elapsed": elapsed, "error": str(error)}
 
     except requests.exceptions.Timeout as error:
-                elapsed = time.time() - call_start
-                return {"success": False, "result": error.response,"time elapsed" : elapsed, "error": None}
-    
+        elapsed = time.time() - call_start
+        return {"success": False, "result": None,
+                "time elapsed": elapsed, "error": str(error)}
+
+    except requests.exceptions.ConnectionError as error:
+        elapsed = time.time() - call_start
+        return {"success": False, "result": None,
+                "time elapsed": elapsed, "error": str(error)}
+
     except requests.RequestException as error:
         elapsed = time.time() - call_start
-        return {"success": False, "result": error.response,"time elapsed" : elapsed, "error": None}
+        return {"success": False, "result": None,
+                "time elapsed": elapsed, "error": str(error)}
 
 
+# ---------------------------------------------------------------- SSL
+def ssl_check(domain):
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((domain, 443), timeout=5) as sock:
+            with context.wrap_socket(sock, server_hostname=domain) as secure_sock:
+                cert = secure_sock.getpeercert()
 
+        expiry = ssl.cert_time_to_seconds(cert["notAfter"])
+        days_left = int((expiry - time.time()) // 86400)
+        return {"success": True, "result": days_left, "error": None}
 
+    except ssl.SSLCertVerificationError as error:
+        return {"success": False, "result": None, "error": str(error)}
 
-# test1 = dns_check("google.com")
-# print(test1)
-# test2 = is_private(test1['result'])
-# print(test2)
+    except socket.gaierror as error:
+        return {"success": False, "result": None, "error": str(error)}
 
-# test3 = dns_check("kaggging.com")
-# test4 = is_private(test3['result'])
-# print(test3)
-# print(test4)
+    except socket.timeout as error:
+        return {"success": False, "result": None, "error": str(error)}
 
-
-# start = time.time()
-# response = requests.get("https://google.com", timeout=5)
-# elapse = time.time() - start
-
-# print(response.status_code)
-
-# data = http_check("kaminggoogle.com")
-# print(data)
-data = http_check("kaggle.com")
-print(data)
+    except OSError as error:
+        return {"success": False, "result": None, "error": str(error)}
