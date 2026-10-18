@@ -1,6 +1,6 @@
 import sys
 
-from monitoring_checks import dns_check, is_private, http_check, ssl_check
+from checks import dns_check, is_private, http_check, ssl_check
 
 SSL_WARN_DAYS = 14
 
