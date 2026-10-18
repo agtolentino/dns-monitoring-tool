@@ -1,0 +1,13 @@
+# healthy sites (should all show OK)
+google.com
+github.com
+python.org
+cloudflare.com
+wikipedia.org
+
+# deliberate failures for demo purposes
+expired.badssl.com
+self-signed.badssl.com
+wrong.host.badssl.com
+192.168.1.10.nip.io
+this-domain-should-not-exist-12345.com
