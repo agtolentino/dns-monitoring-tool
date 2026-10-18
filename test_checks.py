@@ -1,9 +1,10 @@
-"""Tests for checks.py (is_private, ssl_check, dns_check, http_check).
+"""Unit tests for checks.py: is_private, ssl_check, dns_check, http_check.
 
 Run from the project root:   python -m pytest -v
 
-This is a tentative Unit tests written to test IP check logic, mock SSL, and dns checks
-
+No test touches the real network. Sockets, TLS, DNS and HTTP calls are replaced
+with fakes (monkeypatch), so the suite is fast and gives the same result on a
+laptop and on GitHub Actions.
 """
 import socket
 import ssl
@@ -19,45 +20,34 @@ import checks
 
 # ======================================================================
 # 1. is_private(): pure logic, no mocking needed
+#    is_private returns a dict: {"is_private": True/False/None, "error": ...}
 # ======================================================================
 
-@pytest.mark.parametrize(
-    "ip",
-    [
-        "10.0.0.1",          # 10.0.0.0/8, low end
-        "10.255.255.255",    # 10.0.0.0/8, high end
-        "172.16.0.1",        # 172.16.0.0/12, low end
-        "172.31.255.255",    # 172.16.0.0/12, high end
-        "192.168.0.1",       # 192.168.0.0/16, low end
-        "192.168.1.10",      # the address from the SiteHost challenge
-    ],
-)
+@pytest.mark.parametrize("ip", ["10.0.0.1", "10.255.255.255", "172.16.0.1",
+                                "172.31.255.255", "192.168.0.1", "192.168.1.10"])
 def test_is_private_true_for_rfc1918_ranges(ip):
-    assert checks.is_private(ip)
+    result = checks.is_private(ip)
+
+    assert result["is_private"] is True
+    assert result["error"] is None
 
 
-@pytest.mark.parametrize(
-    "ip",
-    [
-        "172.15.255.255",    # just BELOW 172.16.0.0/12
-        "172.32.0.1",        # just ABOVE 172.16.0.0/12
-        "11.0.0.1",          # just above 10.0.0.0/8
-        "192.167.255.255",   # just below 192.168.0.0/16
-        "192.169.0.1",       # just above 192.168.0.0/16
-        "8.8.8.8",           # ordinary public IP
-        "1.1.1.1",           # ordinary public IP
-    ],
-)
+@pytest.mark.parametrize("ip", ["172.15.255.255", "172.32.0.1", "11.0.0.1",
+                                "192.167.255.255", "192.169.0.1", "8.8.8.8", "1.1.1.1"])
 def test_is_private_false_for_public_and_boundary_neighbours(ip):
-    assert not checks.is_private(ip)
+    result = checks.is_private(ip)
+
+    assert result["is_private"] is False
+    assert result["error"] is None
 
 
-def test_is_private_rejects_garbage_input():
-    # ASSUMPTION: your function lets a bad address raise ValueError (what the
-    # ipaddress module does). If yours returns False instead, change this test
-    # to match, but decide on purpose which behaviour you want.
-    with pytest.raises(ValueError):
-        checks.is_private("not-an-ip")
+@pytest.mark.parametrize("bad_input", ["not-an-ip", "999.999.999.999", "", None])
+def test_is_private_returns_error_dict_for_invalid_input(bad_input):
+    # A bad address (including None from a failed DNS lookup) must not crash.
+    result = checks.is_private(bad_input)
+
+    assert result["is_private"] is None
+    assert result["error"]
 
 
 # ======================================================================
@@ -177,11 +167,9 @@ def test_ssl_check_certificate_verification_error_returns_failure_dict(monkeypat
 
 
 # ======================================================================
-# 3. dns_check() and http_check()  (ASSUMPTIONS: see module docstring)
-#
-# Assumed: dns_check resolves with socket.gethostbyname and http_check calls
-# requests.get; both return a dict with at least "success" and "error", like
-# ssl_check. Change the patch targets and keys to match your real code.
+# 3. dns_check(): resolves a name and returns the IP.
+#    It does NOT judge the IP. is_private() does that, and monitor.py
+#    combines the two (the SiteHost scenario).
 # ======================================================================
 
 def test_dns_check_succeeds_for_public_ip(monkeypatch):
@@ -189,17 +177,19 @@ def test_dns_check_succeeds_for_public_ip(monkeypatch):
 
     result = checks.dns_check("example.com")
 
-    assert result["success"] is True
-    assert "93.184.216.34" in str(result)
+    assert result == {"success": True, "result": "93.184.216.34", "error": None}
 
 
-def test_dns_check_flags_private_ip(monkeypatch):
-    # The SiteHost scenario: public DNS answering with an unroutable address.
+def test_dns_result_feeds_is_private_for_the_sitehost_scenario(monkeypatch):
+    # Public DNS answering with an unroutable address: dns_check returns the IP,
+    # is_private flags it. This is the pair monitor.py uses.
     monkeypatch.setattr(checks.socket, "gethostbyname", lambda domain: "192.168.1.10")
 
-    result = checks.dns_check("example.com")
+    dns = checks.dns_check("example.com")
 
-    assert "private" in str(result).lower()
+    assert dns["success"] is True
+    assert dns["result"] == "192.168.1.10"
+    assert checks.is_private(dns["result"])["is_private"] is True
 
 
 def test_dns_check_failure_when_domain_does_not_resolve(monkeypatch):
@@ -211,38 +201,50 @@ def test_dns_check_failure_when_domain_does_not_resolve(monkeypatch):
     result = checks.dns_check("no-such-domain.invalid")
 
     assert result["success"] is False
+    assert result["result"] is None
     assert result["error"]
 
 
-def _fake_response(status_code=200, http_error=None):
-    response = MagicMock()
+# ======================================================================
+# 4. http_check(): fake requests.get with real Response objects
+# ======================================================================
+
+def _response(status_code=200, reason="OK"):
+    """A real requests.Response, so raise_for_status() behaves like production."""
+    response = requests.Response()
     response.status_code = status_code
-    if http_error is not None:
-        response.raise_for_status.side_effect = http_error
+    response.reason = reason
+    response.url = "https://example.com"
     return response
 
 
 def test_http_check_succeeds_on_200(monkeypatch):
-    monkeypatch.setattr(
-        checks.requests, "get", lambda *args, **kwargs: _fake_response(200)
-    )
+    monkeypatch.setattr(checks.requests, "get", lambda *args, **kwargs: _response(200))
 
     result = checks.http_check("example.com")
 
     assert result["success"] is True
-    assert "200" in str(result)
+    assert result["result"] == 200
+    assert result["error"] is None
+    assert result["time elapsed"] >= 0
 
 
-def test_http_check_fails_on_server_error(monkeypatch):
-    error = requests.HTTPError("500 Server Error: Internal Server Error")
+@pytest.mark.parametrize("status, reason", [
+    (404, "Not Found"),
+    (403, "Forbidden"),
+    (500, "Internal Server Error"),
+    (503, "Service Unavailable"),
+])
+def test_http_check_treats_4xx_and_5xx_as_failures(monkeypatch, status, reason):
     monkeypatch.setattr(
-        checks.requests, "get", lambda *args, **kwargs: _fake_response(500, error)
+        checks.requests, "get", lambda *args, **kwargs: _response(status, reason)
     )
 
     result = checks.http_check("example.com")
 
     assert result["success"] is False
-    assert result["error"]
+    assert result["result"] == status  # the status code is kept for the report
+    assert str(status) in result["error"]
 
 
 @pytest.mark.parametrize(
@@ -250,6 +252,7 @@ def test_http_check_fails_on_server_error(monkeypatch):
     [
         pytest.param(requests.Timeout("timed out"), id="timeout"),
         pytest.param(requests.ConnectionError("connection refused"), id="connection-error"),
+        pytest.param(requests.RequestException("something else"), id="other-request-error"),
     ],
 )
 def test_http_check_network_errors_return_failure(monkeypatch, error):
@@ -261,4 +264,37 @@ def test_http_check_network_errors_return_failure(monkeypatch, error):
     result = checks.http_check("example.com")
 
     assert result["success"] is False
+    assert result["result"] is None
     assert result["error"]
+    assert result["time elapsed"] >= 0
+
+
+def test_http_check_adds_https_and_a_timeout(monkeypatch):
+    seen = {}
+
+    def fake_get(url, **kwargs):
+        seen["url"] = url
+        seen["timeout"] = kwargs.get("timeout")
+        return _response(200)
+
+    monkeypatch.setattr(checks.requests, "get", fake_get)
+
+    checks.http_check("example.com")
+
+    assert seen["url"] == "https://example.com"
+    assert seen["timeout"] is not None  # a hung site must not hang the monitor
+
+
+@pytest.mark.parametrize("url", ["http://example.com", "https://example.com"])
+def test_http_check_keeps_an_existing_scheme(monkeypatch, url):
+    seen = {}
+
+    def fake_get(called_url, **kwargs):
+        seen["url"] = called_url
+        return _response(200)
+
+    monkeypatch.setattr(checks.requests, "get", fake_get)
+
+    checks.http_check(url)
+
+    assert seen["url"] == url
