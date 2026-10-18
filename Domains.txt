@@ -5,3 +5,7 @@ example.com
 # demos of failure cases:
 expired.badssl.com
 kagwagle.com
+python.org
+expired.badssl.com
+wrong.host.badssl.com
+thisdomaindoesnotexist12345.com
