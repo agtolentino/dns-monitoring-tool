@@ -73,7 +73,7 @@ def print_report(reports):
 
 
 def main():
-    filename = sys.argv[1] if len(sys.argv) > 1 else "domains.txt"
+    filename = sys.argv[1] if len(sys.argv) > 1 else "domains.txt" #update to match intented .txt file
     domains = load_domains(filename)
 
     reports = []
